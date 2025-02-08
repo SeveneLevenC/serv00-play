@@ -2,10 +2,8 @@ name: 批量保活进程
 
 on:
   schedule:
-    # 使用cron表达式定义任务运行的时间
-    # github使用utc时间
-    - cron: '5 23 * * *' #北京时间7点
-  workflow_dispatch:
+    - cron: '13 6 * * *'  # 每天 UTC 6:13 触发（北京时间 14:13）
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
   deploy:
@@ -17,19 +15,90 @@ jobs:
 
       - name: 安装依赖
         run: |
-          sudo apt-get install sshpass
-          sudo apt-get install jq
+          sudo apt-get update
+          sudo apt-get install -y sshpass jq
 
-      - name: 登录各个serv00并执行保活脚本
+      - name: 检查是否执行登录
+        id: check_login
+        run: |
+          TODAY=$(date +%Y-%m-%d)
+          echo "今天的日期：$TODAY"
+
+          # 获取是否为手动触发
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "检测到手动触发，跳过日期检查，立即执行！"
+            echo "手动触发时，counter.txt 也会被更新"
+            echo "::set-output name=should_run::true"
+            exit 0
+          fi
+
+          # 自动触发时，按 counter.txt 规则检查
+          if [ -f counter.txt ]; then
+            LAST_LOGIN=$(head -n 1 counter.txt)
+            INTERVAL=$(sed -n '2p' counter.txt)
+            NEXT_LOGIN=$(date -d "$LAST_LOGIN + $INTERVAL days" +%Y-%m-%d)
+            echo "上次登录：$LAST_LOGIN，当前间隔：$INTERVAL 天，预计下次登录：$NEXT_LOGIN"
+          else
+            echo "counter.txt 不存在，首次执行！"
+            LAST_LOGIN=$TODAY
+            INTERVAL=1
+            NEXT_LOGIN=$TODAY
+            echo "$TODAY" > counter.txt
+            echo "$INTERVAL" >> counter.txt
+          fi
+
+          # 自动触发时才检查日期
+          if [[ "$TODAY" < "$NEXT_LOGIN" ]]; then
+            echo "今天未到执行时间，跳过登录。"
+            echo "::set-output name=should_run::false"
+            exit 0
+          else
+            echo "今天达到或超过登录日期，继续执行登录。"
+            echo "::set-output name=should_run::true"
+          fi
+
+      - name: 执行登录脚本
+        if: steps.check_login.outputs.should_run == 'true'
         env:
           HOSTS_JSON: ${{ secrets.HOSTS_JSON }}
-          TELEGRAM_TOKEN: ${{secrets.TELEGRAM_TOKEN}}
-          TELEGRAM_USERID: ${{secrets.TELEGRAM_USERID}}
-          WXSENDKEY: ${{secrets.WXSENDKEY}}
-          SENDTYPE: ${{secrets.SENDTYPE}}
-          BUTTON_URL: ${{secrets.BUTTON_URL}}
-          AUTOUPDATE: ${{vars.AUTOUPDATE}}
-          LOGININFO: ${{vars.LOGININFO}}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_USERID: ${{ secrets.TELEGRAM_USERID }}
+          WXSENDKEY: ${{ secrets.WXSENDKEY }}
+          SENDTYPE: ${{ secrets.SENDTYPE }}
+          BUTTON_URL: ${{ secrets.BUTTON_URL }}
+          AUTOUPDATE: ${{ vars.AUTOUPDATE }}
+          LOGININFO: ${{ vars.LOGININFO }}
         run: |
+          # 增加随机延时：0 ~ 3600 秒（最多 1 小时）
+          RANDOM_DELAY=$((RANDOM % 3600))
+          echo "随机延时 ${RANDOM_DELAY} 秒后执行登录脚本"
+          sleep $RANDOM_DELAY
+
           chmod +x ./revive.sh
           ./revive.sh
+
+      - name: 更新并提交 counter.txt
+        if: steps.check_login.outputs.should_run == 'true'
+        run: |
+          CURRENT_INTERVAL=$(sed -n '2p' counter.txt || echo "1")
+          case "$CURRENT_INTERVAL" in
+            1) NEW_INTERVAL=2 ;;
+            2) NEW_INTERVAL=3 ;;
+            3) NEW_INTERVAL=4 ;;
+            4) NEW_INTERVAL=1 ;;
+            *) NEW_INTERVAL=1 ;;
+          esac
+          TODAY=$(date +%Y-%m-%d)
+          echo "更新 counter.txt：新日期 $TODAY，新的间隔 $NEW_INTERVAL 天"
+          echo "$TODAY" > counter.txt
+          echo "$NEW_INTERVAL" >> counter.txt
+
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add counter.txt
+          git commit -m "手动/自动触发：更新 counter.txt（新间隔 $NEW_INTERVAL）"
+          git push
+
+      - name: 跳过登录
+        if: steps.check_login.outputs.should_run != 'true'
+        run: echo "今天不满足登录条件，跳过执行登录脚本。"
