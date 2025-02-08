@@ -2,8 +2,8 @@ name: 批量保活进程
 
 on:
   schedule:
-    - cron: '13 6 * * *'  # 每天 UTC 6:13 触发（北京时间 14:13）
-  workflow_dispatch:  # 允许手动触发
+    - cron: '13 6 * * *'  # 每天 UTC 6:13 （北京时间 14:13）
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -28,7 +28,7 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "检测到手动触发，跳过日期检查，立即执行！"
             echo "手动触发时，counter.txt 也会被更新"
-            echo "::set-output name=should_run::true"
+            echo "should_run=true" >> $GITHUB_ENV
             exit 0
           fi
 
@@ -50,15 +50,15 @@ jobs:
           # 自动触发时才检查日期
           if [[ "$TODAY" < "$NEXT_LOGIN" ]]; then
             echo "今天未到执行时间，跳过登录。"
-            echo "::set-output name=should_run::false"
+            echo "should_run=false" >> $GITHUB_ENV
             exit 0
           else
             echo "今天达到或超过登录日期，继续执行登录。"
-            echo "::set-output name=should_run::true"
+            echo "should_run=true" >> $GITHUB_ENV
           fi
 
       - name: 执行登录脚本
-        if: steps.check_login.outputs.should_run == 'true'
+        if: env.should_run == 'true'
         env:
           HOSTS_JSON: ${{ secrets.HOSTS_JSON }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -69,8 +69,8 @@ jobs:
           AUTOUPDATE: ${{ vars.AUTOUPDATE }}
           LOGININFO: ${{ vars.LOGININFO }}
         run: |
-          # 增加随机延时：0 ~ 3600 秒（最多 1 小时）
-          RANDOM_DELAY=$((RANDOM % 3600))
+          # 增加随机延时：0 ~ 1200 秒（最多 20 分钟）
+          RANDOM_DELAY=$((RANDOM % 1200))
           echo "随机延时 ${RANDOM_DELAY} 秒后执行登录脚本"
           sleep $RANDOM_DELAY
 
@@ -78,7 +78,7 @@ jobs:
           ./revive.sh
 
       - name: 更新并提交 counter.txt
-        if: steps.check_login.outputs.should_run == 'true'
+        if: env.should_run == 'true'
         run: |
           CURRENT_INTERVAL=$(sed -n '2p' counter.txt || echo "1")
           case "$CURRENT_INTERVAL" in
@@ -100,5 +100,5 @@ jobs:
           git push
 
       - name: 跳过登录
-        if: steps.check_login.outputs.should_run != 'true'
+        if: env.should_run != 'true'
         run: echo "今天不满足登录条件，跳过执行登录脚本。"
